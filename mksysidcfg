@@ -1,0 +1,160 @@
+#!/usr/bin/perl -w
+use strict;
+use Data::Dumper;
+
+my $system_locale;
+my $terminal = undef;
+my $network = undef;
+my $security_policy = 'NONE';
+my $root_password;
+my $auto_reg = 'none';
+
+$system_locale = $ENV{LANG} || 'C';
+print "system_locale=$system_locale\n" if ($system_locale);
+
+my $timezone = '';
+open F, "</etc/default/init" or warn "$!";
+while (<F>) {
+	chomp;
+	next if (/^\s*($|#)/);
+	my ($var, $val) = split(/=/, $_, 2);
+	if ($var eq "TZ") {
+		$timezone = $val;
+	}
+}
+close F;
+print "timezone=$timezone\n" if ($timezone);
+print "security_policy=$security_policy\n" if ($security_policy);
+
+open F, "/sbin/ifconfig -au6|" or warn "ifconfig $!";
+my $ifconfig6 = lc(join("", <F>));
+close F or warn "ifconfig: $!";
+my $ipv6 = length($ifconfig6) ? "yes" : "no";
+my $network_interface = "PRIMARY {dhcp protocol_ipv6=$ipv6}";
+print "network_interface=$network_interface\n";
+
+my $service_profile = '';
+if (is_svc_online("svc:/network/rexec:default")) {
+	$service_profile = "open";
+} else {
+	$service_profile = "limited_net";
+}
+print "service_profile=$service_profile\n" if ($service_profile);
+
+my %nsswitch = read_nsswitch();
+my $nss_hosts = $nsswitch{'hosts'};
+if ($nsswitch{'hosts'} =~ /dns/) {
+	my $dns_info = dns_info();
+	# Use server ip address instead of 127.0.0.1
+	$dns_info->{'nameserver'} =~ s/127\.0\.0\.1/10.0.159.26/;
+	#print Dumper $dns_info;
+	my $domain_name = $dns_info->{'domain'};
+	if (!$domain_name and $dns_info->{'search'}) {
+		$domain_name = (split(/ /, $dns_info->{search}))[0]; 
+	} else {
+		$domain_name = ''
+	};
+	$dns_info->{nameserver} =~ s/ /,/g;
+	$dns_info->{search} =~ s/ /,/g;
+	print "name_service=DNS {domain_name=$domain_name name_server=$dns_info->{nameserver}";
+	print " search=$dns_info->{search}" if ($dns_info->{'search'});
+	print "}\n";
+} elsif ($nsswitch{hosts} eq 'files') {
+	print "name_service=NONE\n";
+}
+
+my $nfs4_domain = nfs_domain();
+print "nfs4_domain=$nfs4_domain\n" if ($nfs4_domain);
+
+print "auto_reg=$auto_reg\n" if ($auto_reg);
+
+
+### 
+sub is_svc_online {
+	my $fmri = shift;
+	my $state = 0;
+	open S, "svcs $fmri|" or warn "svcs: $!";
+	while (<S>) {
+		chomp;
+		next if (/^STATE/);
+		if (index($_, $fmri)  != -1) {
+			my ($state, $stime, $fmri) = split(/\s+/);
+			$state = 1;
+		}
+	}
+	close S or warn "svcs: $!";
+	return $state;
+}
+
+sub read_nsswitch {
+	my $filename = "/etc/nsswitch.conf";
+	my %nsswitch;
+	my $f;
+	if (!open $f, "<", $filename) {
+		warn "$filename: $!";
+		return;
+	}
+	while (<$f>) {
+		chomp;
+		next if (/^\s*($|#)/);
+		my ($db, $src) = split(/:/, $_, 2);
+		foreach ($db, $src) {
+			s/^\s+//;
+			s/\s+$//;
+		}
+		$nsswitch{$db} = $src;
+	}
+	close $f;
+	return %nsswitch;
+}
+
+sub dns_info {
+	my $filename = "/etc/resolv.conf";
+	my %dns_info;
+	my $f;
+	if (!open $f, "<", $filename) {
+		warn "$filename: $!";
+		return;
+	}
+	while (<$f>) {
+		chomp;
+		next if (/^\s*($|#)/);
+		my ($var, $val) = split(/\s+/, $_, 2);
+		foreach ($var, $val) {
+			s/^\s+//;
+			s/\s+$//;
+		}
+		if ($dns_info{$var}) {
+			$dns_info{$var} .= " $val";
+		} else {
+			$dns_info{$var} = $val;
+		}
+	}
+	close $f;
+	
+	return \%dns_info;
+}
+
+sub nfs_domain {
+	my $filename = "/etc/default/nfs";
+	my $nfs4mapid_domain;
+	my %nfs;
+	my $f;
+	if (!open $f, "<", $filename) {
+		warn "$filename: $!";
+		return;
+	}
+	while (<$f>) {
+		chomp;
+		next if (/^\s*($|#)/);
+		my ($var, $val) = split(/=/, $_, 2);
+		foreach ($var, $val) {
+			s/^\s+//;
+			s/\s+$//;
+		}
+		$nfs{$var} = $val;
+	}
+	close $f;
+	$nfs4mapid_domain = $nfs{'NFSMAPID_DOMAIN'} || 'dynamic';
+	return $nfs4mapid_domain;
+}
