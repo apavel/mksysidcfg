@@ -1,29 +1,18 @@
 #!/usr/bin/perl -w
 use strict;
-use Data::Dumper;
 
 my $system_locale;
 my $terminal = undef;
 my $network = undef;
-my $security_policy = 'NONE';
+my $security_policy = 'NONE'; # No Kerberos as of now
 my $root_password;
 my $auto_reg = 'none';
 
 $system_locale = $ENV{LANG} || 'C';
 print "system_locale=$system_locale\n" if ($system_locale);
 
-my $timezone = '';
-open F, "</etc/default/init" or warn "$!";
-while (<F>) {
-	chomp;
-	next if (/^\s*($|#)/);
-	my ($var, $val) = split(/=/, $_, 2);
-	if ($var eq "TZ") {
-		$timezone = $val;
-	}
-}
-close F;
-print "timezone=$timezone\n" if ($timezone);
+my %default_init = default_init();
+print "timezone=$default_init{TZ}\n" if ($default_init{TZ});
 print "security_policy=$security_policy\n" if ($security_policy);
 
 open F, "/sbin/ifconfig -au6|" or warn "ifconfig $!";
@@ -47,7 +36,6 @@ if ($nsswitch{'hosts'} =~ /dns/) {
 	my $dns_info = dns_info();
 	# Use server ip address instead of 127.0.0.1
 	$dns_info->{'nameserver'} =~ s/127\.0\.0\.1/10.0.159.26/;
-	#print Dumper $dns_info;
 	my $domain_name = $dns_info->{'domain'};
 	if (!$domain_name and $dns_info->{'search'}) {
 		$domain_name = (split(/ /, $dns_info->{search}))[0]; 
@@ -55,7 +43,7 @@ if ($nsswitch{'hosts'} =~ /dns/) {
 		$domain_name = ''
 	};
 	$dns_info->{nameserver} =~ s/ /,/g;
-	$dns_info->{search} =~ s/ /,/g;
+	$dns_info->{search} =~ s/ /,/g if ($dns_info->{search};
 	print "name_service=DNS {domain_name=$domain_name name_server=$dns_info->{nameserver}";
 	print " search=$dns_info->{search}" if ($dns_info->{'search'});
 	print "}\n";
@@ -89,11 +77,10 @@ sub is_svc_online {
 sub read_nsswitch {
 	my $filename = "/etc/nsswitch.conf";
 	my %nsswitch;
-	my $f;
-	if (!open $f, "<", $filename) {
-		warn "$filename: $!";
-		return;
-	}
+
+	my $f = open_file ($filename);
+	return unless $f;
+
 	while (<$f>) {
 		chomp;
 		next if (/^\s*($|#)/);
@@ -108,14 +95,45 @@ sub read_nsswitch {
 	return %nsswitch;
 }
 
-sub dns_info {
-	my $filename = "/etc/resolv.conf";
-	my %dns_info;
+sub default_init {
+	my $filename = "/etc/default/init";
+	my %init;
+
+	my $f = open_file($filename);
+	return unless $f;
+
+	while (<$f>) {
+		chomp;
+		next if (/^\s*($|#)/);
+		my ($var, $val) = split(/=/, $_, 2);
+		foreach ($var, $val) {
+			s/^\s+//;
+			s/\s+$//;
+		}
+		$init{$var} = $val;
+	}
+	close $f;
+	return %init;
+}
+
+sub open_file {
+	my $filename = shift;
+	return unless $filename;
+
 	my $f;
 	if (!open $f, "<", $filename) {
 		warn "$filename: $!";
 		return;
 	}
+	return $f;
+}
+
+sub dns_info {
+	my $filename = "/etc/resolv.conf";
+	my %dns_info;
+	my $f = open_file($filename);
+	return unless $f;
+
 	while (<$f>) {
 		chomp;
 		next if (/^\s*($|#)/);
@@ -139,11 +157,10 @@ sub nfs_domain {
 	my $filename = "/etc/default/nfs";
 	my $nfs4mapid_domain;
 	my %nfs;
-	my $f;
-	if (!open $f, "<", $filename) {
-		warn "$filename: $!";
-		return;
-	}
+
+	my $f = open_file($filename);
+	return unless $f;
+
 	while (<$f>) {
 		chomp;
 		next if (/^\s*($|#)/);
